@@ -1,0 +1,11 @@
+## Interface: 11508, 11507, 20505, 30405, 38000, 40402, 50503, 50502, 110205, 110207, 120000
+## Title: Profession Knowledge Tracker
+## Notes: Tracks weekly and permanent profession knowledge points
+## Author: Otto
+## Version: 1.2.0
+## SavedVariables: PKT_DB
+## IconTexture: Interface\Icons\inv_misc_book_09
+
+Data.lua
+Core.lua
+
