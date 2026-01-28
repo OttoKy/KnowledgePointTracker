@@ -89,6 +89,7 @@ local unpack = unpack or table.unpack
 local format = string.format
 local gsub = string.gsub
 local wipe = wipe
+local time = time
 
 local function Clamp(v, lo, hi)
     if v < lo then return lo end
@@ -148,6 +149,112 @@ local function HeaderHexColor(rgb, name)
 end
 
 -- ============================================================================
+-- GATHERING WEEKLY POOL FIX
+-- Only for gathering professions with questIDs pool:
+--   Herbalism, Mining, Skinning
+--
+-- Fixes:
+--  1) "any of the 5 completed => done"
+--  2) quest completion flag sometimes updates late -> record QUEST_TURNED_IN
+--  3) optional: display active quest title if it is in quest log
+-- ============================================================================
+
+local gatheringWeeklySet = nil
+
+local function BuildGatheringWeeklySet()
+    local set = {}
+    if PKT and PKT.WeeklyQuests then
+        local targets = { Herbalism = true, Mining = true, Skinning = true }
+        for profName, data in pairs(PKT.WeeklyQuests) do
+            if targets[profName] and type(data) == "table" and type(data.questIDs) == "table" then
+                for i = 1, #data.questIDs do
+                    local qid = data.questIDs[i]
+                    if type(qid) == "number" then
+                        set[qid] = true
+                    end
+                end
+            end
+        end
+    end
+    gatheringWeeklySet = set
+end
+
+local function IsGatheringWeeklyQuestID(qid)
+    if not gatheringWeeklySet then
+        BuildGatheringWeeklySet()
+    end
+    return gatheringWeeklySet and gatheringWeeklySet[qid] == true
+end
+
+local function GetSecondsUntilWeeklyResetSafe()
+    if C_DateAndTime and type(C_DateAndTime.GetSecondsUntilWeeklyReset) == "function" then
+        local s = C_DateAndTime.GetSecondsUntilWeeklyReset()
+        if type(s) == "number" and s > 0 then
+            return s
+        end
+    end
+    return 7 * 24 * 60 * 60
+end
+
+local function GetGatheringWeeklyState()
+    PKT_DB.gatherWeeklyState = PKT_DB.gatherWeeklyState or { resetAt = 0, completed = {} }
+    if type(PKT_DB.gatherWeeklyState.completed) ~= "table" then
+        PKT_DB.gatherWeeklyState.completed = {}
+    end
+    if type(PKT_DB.gatherWeeklyState.resetAt) ~= "number" then
+        PKT_DB.gatherWeeklyState.resetAt = 0
+    end
+    return PKT_DB.gatherWeeklyState
+end
+
+local function GatheringWeeklyMaybeReset()
+    local st = GetGatheringWeeklyState()
+    local now = time()
+    if now >= (st.resetAt or 0) then
+        st.completed = {}
+        st.resetAt = now + GetSecondsUntilWeeklyResetSafe()
+    end
+    return st
+end
+
+local function RecordGatheringWeeklyTurnIn(questID)
+    if type(questID) ~= "number" then return end
+    if not IsGatheringWeeklyQuestID(questID) then return end
+    local st = GatheringWeeklyMaybeReset()
+    st.completed[questID] = true
+end
+
+local function IsQuestInLog(questID)
+    if not questID then return false end
+    if C_QuestLog and type(C_QuestLog.GetLogIndexForQuestID) == "function" then
+        return C_QuestLog.GetLogIndexForQuestID(questID) ~= nil
+    end
+    return false
+end
+
+local function GetQuestTitleSafe(questID)
+    if not questID then return nil end
+    if C_QuestLog and type(C_QuestLog.GetTitleForQuestID) == "function" then
+        local title = C_QuestLog.GetTitleForQuestID(questID)
+        if type(title) == "string" and title ~= "" then
+            return title
+        end
+    end
+    return nil
+end
+
+local function FindActiveQuestFromPool(questIDs)
+    if type(questIDs) ~= "table" then return nil end
+    for i = 1, #questIDs do
+        local qid = questIDs[i]
+        if IsQuestInLog(qid) then
+            return qid
+        end
+    end
+    return nil
+end
+
+-- ============================================================================
 -- PROFESSION DETECTION (reliable at login)
 -- Uses base skillLineID from GetProfessionInfo -> PKT.SkillLineNames
 -- ============================================================================
@@ -181,8 +288,6 @@ end
 
 -- ============================================================================
 -- TOMTOM INTEGRATION (click treasure line -> waypoint + arrow)
--- Supports coords as 0-1 or 0-100 (auto normalize).
--- Uses mapID if present; otherwise tries AddZWaypoint(zoneName) if available.
 -- ============================================================================
 local lastTomTomWaypoint = nil
 
@@ -205,7 +310,6 @@ local function TomTom_SetTreasureWaypoint(t)
         return
     end
 
-    -- Normalize if user stored as 52.6 / 49.2 etc
     if x > 1 then x = x / 100 end
     if y > 1 then y = y / 100 end
 
@@ -220,11 +324,9 @@ local function TomTom_SetTreasureWaypoint(t)
     TomTom_ClearLast()
 
     local uid
-
     if t.mapID and type(TomTom.AddWaypoint) == "function" then
         uid = TomTom:AddWaypoint(t.mapID, x, y, opts)
     elseif t.zone and type(TomTom.AddZWaypoint) == "function" then
-        -- Note: relies on TomTom being able to resolve zone text (usually localized; your data is English)
         uid = TomTom:AddZWaypoint(t.zone, x, y, opts)
     else
         print("|cffffd200PKT:|r Can't set TomTom waypoint (missing mapID and/or AddZWaypoint).")
@@ -245,9 +347,25 @@ end
 -- ============================================================================
 local function IsWeeklyQuestComplete(profName)
     local data = PKT.WeeklyQuests and PKT.WeeklyQuests[profName]
-    if not data or not data.questID then return true end
+    if not data then return true end
+
+    -- Gathering pools: Herbalism/Mining/Skinning
+    if data.questIDs then
+        local st = GatheringWeeklyMaybeReset()
+        for _, qid in ipairs(data.questIDs) do
+            if st.completed[qid] or IsQuestComplete(qid) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Single questID (crafting professions)
+    if not data.questID then return true end
     return IsQuestComplete(data.questID)
 end
+
+
 
 local function GetBookStatus(bookData)
     return IsQuestComplete(bookData.questID)
@@ -670,11 +788,8 @@ function PKT.UpdateDisplay()
         local profName = scratchProfNames[i]
         local profColor = Config.professionColors[profName] or { 1, 1, 1, 1 }
 
-        local linesAdded = 0
-
         local function PushLine(text, color, indent, style, onClick, tooltip)
             AddLine(text, color, indent, style, onClick, tooltip)
-            linesAdded = linesAdded + 1
         end
 
         local function AddMissingCount(label, count)
@@ -683,20 +798,29 @@ function PKT.UpdateDisplay()
             end
         end
 
-        -- We'll render into a scratch buffer by counting if anything shows
         local before = lineIndex
 
-        -- Header first (we may remove it if empty + hide_completed_professions)
         AddLine(HeaderHexColor(profColor, profName), profColor, 0, "header")
 
         -- =====================
-        -- WEEKLY SOURCES
+        -- WEEKLY QUESTS
         -- =====================
         if S("track_weekly_quest") then
             local weeklyQuestData = PKT.WeeklyQuests and PKT.WeeklyQuests[profName]
-            if weeklyQuestData and weeklyQuestData.questID then
+            if weeklyQuestData and (weeklyQuestData.questID or weeklyQuestData.questIDs) then
                 if not IsWeeklyQuestComplete(profName) then
-                    local label = (weeklyQuestData.type == "crafting_orders") and "Crafting Services Requested" or "Weekly Quest"
+                    local label
+
+                    if weeklyQuestData.type == "crafting_orders" then
+                        label = "Crafting Services Requested"
+                    elseif type(weeklyQuestData.questIDs) == "table" then
+                        -- Gathering pool: show active quest title if it's in quest log, else generic
+                        local activeID = FindActiveQuestFromPool(weeklyQuestData.questIDs)
+                        label = (activeID and GetQuestTitleSafe(activeID)) or (weeklyQuestData.name or "Weekly Quest")
+                    else
+                        label = weeklyQuestData.name or "Weekly Quest"
+                    end
+
                     AddMissingCount(label, 1)
                 end
             end
@@ -854,12 +978,10 @@ function PKT.UpdateDisplay()
             end
         end
 
-        -- Decide visibility of profession block:
-        local addedAfterHeader = (lineIndex - before - 1) -- minus header itself
+        local addedAfterHeader = (lineIndex - before - 1)
         local shouldShow = (addedAfterHeader > 0) or (not S("hide_completed_professions"))
 
         if not shouldShow then
-            -- Remove header we just added by hiding it and rewinding index
             contentLines[before + 1]:Hide()
             lineIndex = before
         else
@@ -869,7 +991,6 @@ function PKT.UpdateDisplay()
                 PushLine("• Done", Config.completeColor, 10, "normal")
             end
 
-            -- Spacer
             yOffset = yOffset - 4
             totalHeight = totalHeight + 4
         end
@@ -910,6 +1031,10 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         InitSettings()
         ApplyUISettings()
 
+        -- init weekly reset state early
+        GatheringWeeklyMaybeReset()
+        BuildGatheringWeeklySet()
+
         if PKT_DB.position then
             local pos = PKT_DB.position
             mainFrame = CreateMainFrame()
@@ -932,7 +1057,19 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
             C_Timer.After(1.0, PKT.UpdateDisplay)
         end
 
-    elseif event == "SKILL_LINES_CHANGED" or event == "BAG_UPDATE" or event == "QUEST_TURNED_IN" or event == "QUEST_ACCEPTED" then
+    elseif event == "QUEST_TURNED_IN" then
+        -- arg1 = questID
+        RecordGatheringWeeklyTurnIn(arg1)
+
+        -- Update soon, and again a bit later (covers delayed completion flag updates)
+        ScheduleUpdate()
+        C_Timer.After(1.5, function()
+            if PKT and PKT.UpdateDisplay then
+                PKT.UpdateDisplay()
+            end
+        end)
+
+    elseif event == "SKILL_LINES_CHANGED" or event == "BAG_UPDATE" or event == "QUEST_ACCEPTED" then
         ScheduleUpdate()
     end
 end)

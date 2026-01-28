@@ -239,27 +239,52 @@ PKT.WeeklyQuests = {
         maxKP = 2,
         type = "crafting_orders",
     },
-    -- Gathering professions (turn-in to trainer)
-    -- These are "Gathering X" quests from trainers
-    Herbalism = { 
-        questID = 83097, -- Weekly herbalism turn-in
-        name = "Herbalism Weekly",
-        maxKP = 3,
-        type = "trainer_quest",
-    },
-    Mining = { 
-        questID = 83103, -- Weekly mining turn-in
-        name = "Mining Weekly",
-        maxKP = 3,
-        type = "trainer_quest",
-    },
-    Skinning = { 
-        questID = 83106, -- Weekly skinning turn-in
-        name = "Skinning Weekly",
-        maxKP = 3,
-        type = "trainer_quest",
-    },
+   
 }
+
+
+-- Gathering weekly quests rotate: only 1 of these is active per week.
+-- We track completion by "any of the pool completed this week".
+
+PKT.WeeklyQuests.Herbalism = {
+    questIDs = {
+        82970, -- A Bloom and A Blossom
+        82962, -- A Handful of Luredrops
+        82965, -- Light and Shadow
+        82958, -- Little Blessings
+        82916, -- When Fungi Bloom
+    },
+    name = "Herbalism Weekly",
+    maxKP = 3,
+    type = "trainer_quest",
+}
+
+PKT.WeeklyQuests.Mining = {
+    questIDs = {
+        83103, -- Acquiring Aqirite
+        83102, -- Bismuth is Business
+        83104, -- Identifying Ironclaw
+        83106, -- Null Pebble Excavation
+        83105, -- Rush-order Requisition
+    },
+    name = "Mining Weekly",
+    maxKP = 3,
+    type = "trainer_quest",
+}
+
+PKT.WeeklyQuests.Skinning = {
+    questIDs = {
+        83097, -- Cinder and Storm
+        83100, -- Cracking the Shell
+        82993, -- From Shadows
+        83098, -- Snap and Crackle
+        82992, -- Stormcharged Goods
+    },
+    name = "Skinning Weekly",
+    maxKP = 3,
+    type = "trainer_quest",
+}
+
 
 -- Patron Order tracking
 -- These give the bulk of weekly KP for crafters (16-24 per week)
