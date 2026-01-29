@@ -51,6 +51,8 @@ local Config = {
 PKT_DB = PKT_DB or {}
 
 local DEFAULT_SETTINGS = {
+    selected_expansion = "TWW",              -- Current expansion to track
+
     track_weekly_quest = true,
     track_repeatable_treasures = true,
     track_weekly_gathering = true,
@@ -163,9 +165,10 @@ local gatheringWeeklySet = nil
 
 local function BuildGatheringWeeklySet()
     local set = {}
-    if PKT and PKT.WeeklyQuests then
+    local weeklyQuests = PKT.GetWeeklyQuests()
+    if weeklyQuests then
         local targets = { Herbalism = true, Mining = true, Skinning = true }
-        for profName, data in pairs(PKT.WeeklyQuests) do
+        for profName, data in pairs(weeklyQuests) do
             if targets[profName] and type(data) == "table" and type(data.questIDs) == "table" then
                 for i = 1, #data.questIDs do
                     local qid = data.questIDs[i]
@@ -346,7 +349,8 @@ end
 -- DATA HELPERS
 -- ============================================================================
 local function IsWeeklyQuestComplete(profName)
-    local data = PKT.WeeklyQuests and PKT.WeeklyQuests[profName]
+    local weeklyQuests = PKT.GetWeeklyQuests()
+    local data = weeklyQuests and weeklyQuests[profName]
     if not data then return true end
 
     -- Gathering pools: Herbalism/Mining/Skinning
@@ -391,10 +395,11 @@ local function GetIncompleteBooks(profName)
         end
     end
 
-    local artisanBooks = PKT.ArtisanBooks and PKT.ArtisanBooks[profName]
-    if artisanBooks then
-        for i = 1, #artisanBooks do
-            local book = artisanBooks[i]
+    local artisanBooks = PKT.GetArtisanBooks()
+    local profArtisanBooks = artisanBooks and artisanBooks[profName]
+    if profArtisanBooks then
+        for i = 1, #profArtisanBooks do
+            local book = profArtisanBooks[i]
             if book and book.questID and not GetBookStatus(book) then
                 incomplete[#incomplete + 1] = {
                     type = "artisan",
@@ -406,7 +411,8 @@ local function GetIncompleteBooks(profName)
         end
     end
 
-    local kejBook = PKT.KejBooks and PKT.KejBooks[profName]
+    local kejBooks = PKT.GetKejBooks()
+    local kejBook = kejBooks and kejBooks[profName]
     if kejBook and kejBook.questID and not GetBookStatus(kejBook) then
         incomplete[#incomplete + 1] = {
             type = "kej",
@@ -521,7 +527,7 @@ end
 
 local function CreateSettingsFrame()
     local f = CreateFrame("Frame", "PKT_SettingsFrame", UIParent, "BackdropTemplate")
-    f:SetSize(380, 450)
+    f:SetSize(380, 510)  -- Increased height for expansion dropdown
     f:SetPoint("CENTER")
     f:SetClampedToScreen(true)
     f:SetMovable(true)
@@ -572,6 +578,57 @@ local function CreateSettingsFrame()
     local y = -40
     local x = 16
 
+    -- =====================
+    -- EXPANSION SELECTOR
+    -- =====================
+    local expHeader = f:CreateFontString(nil, "OVERLAY")
+    expHeader:SetPoint("TOPLEFT", f, "TOPLEFT", x, y)
+    expHeader:SetFont(Config.fontFace, 12, "OUTLINE")
+    expHeader:SetText("|cffffd700Expansion|r")
+
+    y = y - 22
+    local expLabel = f:CreateFontString(nil, "OVERLAY")
+    expLabel:SetPoint("TOPLEFT", f, "TOPLEFT", x, y)
+    expLabel:SetFont(Config.fontFace, 11, "OUTLINE")
+    expLabel:SetText("Track knowledge for:")
+
+    -- Create dropdown for expansion selection
+    local expDropdown = CreateFrame("Frame", "PKT_ExpansionDropdown", f, "UIDropDownMenuTemplate")
+    expDropdown:SetPoint("TOPLEFT", f, "TOPLEFT", x + 120, y + 5)
+    UIDropDownMenu_SetWidth(expDropdown, 150)
+
+    local function ExpDropdown_OnClick(self, arg1)
+        PKT_DB.settings.selected_expansion = arg1
+        UIDropDownMenu_SetText(expDropdown, PKT.Expansions[arg1].name)
+        -- Rebuild gathering weekly set for new expansion
+        gatheringWeeklySet = nil
+        BuildGatheringWeeklySet()
+        if mainFrame and mainFrame:IsShown() then
+            PKT.UpdateDisplay()
+        end
+    end
+
+    local function ExpDropdown_Initialize(self, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, expKey in ipairs(PKT.ExpansionOrder) do
+            local expData = PKT.Expansions[expKey]
+            info.text = expData.name
+            info.arg1 = expKey
+            info.func = ExpDropdown_OnClick
+            info.checked = (S("selected_expansion") == expKey)
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end
+
+    UIDropDownMenu_Initialize(expDropdown, ExpDropdown_Initialize)
+
+    f:SetScript("OnShow", function(self)
+        local currentExp = S("selected_expansion") or "TWW"
+        local expData = PKT.Expansions[currentExp]
+        UIDropDownMenu_SetText(expDropdown, expData and expData.name or "The War Within")
+    end)
+
+    y = y - 35
     local hdr1 = f:CreateFontString(nil, "OVERLAY")
     hdr1:SetPoint("TOPLEFT", f, "TOPLEFT", x, y)
     hdr1:SetFont(Config.fontFace, 12, "OUTLINE")
@@ -784,6 +841,13 @@ function PKT.UpdateDisplay()
 
     local hasAny = false
 
+    -- Get expansion-specific data
+    local weeklyQuests = PKT.GetWeeklyQuests()
+    local weeklyTreasureItems = PKT.GetWeeklyTreasureItems()
+    local weeklyGatheringItems = PKT.GetWeeklyGatheringItems()
+    local treatiseItems = PKT.GetTreatiseItems()
+    local treasures = PKT.GetTreasures()
+
     for i = 1, #scratchProfNames do
         local profName = scratchProfNames[i]
         local profColor = Config.professionColors[profName] or { 1, 1, 1, 1 }
@@ -806,7 +870,7 @@ function PKT.UpdateDisplay()
         -- WEEKLY QUESTS
         -- =====================
         if S("track_weekly_quest") then
-            local weeklyQuestData = PKT.WeeklyQuests and PKT.WeeklyQuests[profName]
+            local weeklyQuestData = weeklyQuests and weeklyQuests[profName]
             if weeklyQuestData and (weeklyQuestData.questID or weeklyQuestData.questIDs) then
                 if not IsWeeklyQuestComplete(profName) then
                     local label
@@ -827,7 +891,7 @@ function PKT.UpdateDisplay()
         end
 
         if S("track_repeatable_treasures") then
-            local list = PKT.WeeklyTreasureItems and PKT.WeeklyTreasureItems[profName]
+            local list = weeklyTreasureItems and weeklyTreasureItems[profName]
             if list then
                 local missing = 0
                 for j = 1, #list do
@@ -848,7 +912,7 @@ function PKT.UpdateDisplay()
         end
 
         if S("track_weekly_gathering") then
-            local data = PKT.WeeklyGatheringItems and PKT.WeeklyGatheringItems[profName]
+            local data = weeklyGatheringItems and weeklyGatheringItems[profName]
             if data and data.blue and data.purple then
                 local method = (profName == "Enchanting") and "Disenchanting" or "Gathering"
 
@@ -885,22 +949,22 @@ function PKT.UpdateDisplay()
         end
 
         if S("track_treatise") then
-            local treatise = PKT.TreatiseItems and PKT.TreatiseItems[profName]
+            local treatise = treatiseItems and treatiseItems[profName]
             if treatise and treatise.questID then
                 local usedThisWeek = IsQuestComplete(treatise.questID)
                 local count = treatise.itemID and GetItemCountSafe(treatise.itemID) or 0
 
                 if usedThisWeek then
                     if S("show_done_lines") then
-                        PushLine("• Algari Treatise: Done", Config.completeColor, 10, "normal")
+                        PushLine("• Treatise: Done", Config.completeColor, 10, "normal")
                     end
                 else
                     if count > 0 then
                         if S("show_have_treatise") then
-                            PushLine("• Algari Treatise — in inventory (use it)", Config.progressColor, 10, "normal")
+                            PushLine("• Treatise — in inventory (use it)", Config.progressColor, 10, "normal")
                         end
                     else
-                        AddMissingCount("Algari Treatise", 1)
+                        AddMissingCount("Treatise", 1)
                     end
                 end
             end
@@ -910,7 +974,7 @@ function PKT.UpdateDisplay()
         -- ONE-TIME TREASURES (LIST + TOMTOM CLICK)
         -- =====================
         if S("track_one_time_treasures") then
-            local list = PKT.Treasures and PKT.Treasures[profName]
+            local list = treasures and treasures[profName]
             if list then
                 local remaining = 0
                 for j = 1, #list do
